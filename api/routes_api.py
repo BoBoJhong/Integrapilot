@@ -3,12 +3,12 @@
 import os
 import shutil
 import zipfile
-from datetime import datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 
+from api import db
 from api import helpers as h
 from api.config import BASE_DIR, REPORTS_DIR, UPLOAD_DIR
 from api.helpers import save_upload_zip_chunks
@@ -60,16 +60,31 @@ def get_mounts() -> dict:
 
 @router.get("/reports")
 def list_reports() -> dict:
-    files = sorted(REPORTS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
-    items = [
-        {
-            "id": p.name,
-            "name": p.name,
-            "updated_at": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
-            "size": p.stat().st_size,
-        }
-        for p in files
-    ]
+    rows = db.list_reports()
+    if not rows:
+        files = sorted(REPORTS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        items = [
+            {
+                "id": p.name,
+                "name": p.name,
+                "updated_at": h.timestamp_to_taipei_iso(p.stat().st_mtime),
+                "size": p.stat().st_size,
+            }
+            for p in files
+        ]
+        return {"reports": items}
+
+    items = []
+    for r in rows:
+        updated_at = r["updated_at"]
+        items.append(
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                "size": r["size"],
+            }
+        )
     return {"reports": items}
 
 
@@ -86,7 +101,7 @@ def get_report(report_id: str) -> dict[str, str]:
 @router.post("/export-docx")
 def export_docx(payload: ExportDocxRequest) -> Response:
     data = h.markdown_to_docx_bytes(payload.markdown, BASE_DIR)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ts = h.now_taipei().strftime("%Y%m%d-%H%M%S")
     filename = f"integration-report-{ts}.docx"
     return Response(
         content=data,
@@ -140,13 +155,24 @@ async def upload_zip(
         shutil.rmtree(work, ignore_errors=True)
         raise HTTPException(status_code=400, detail="解壓後找不到有效專案目錄")
 
-    return {
+    out = {
         "slot": s,
         "path": str(root),
         "upload_id": job_id,
         "zip_name": filename,
         "bytes": total,
     }
+    db.create_input_asset(
+        slot=s,
+        source_type="zip",
+        resolved_path=out["path"],
+        now=h.now_taipei(),
+        upload_id=job_id,
+        origin_url=None,
+        branch=None,
+        size_bytes=total,
+    )
+    return out
 
 
 @router.post("/clone-repo")
@@ -173,12 +199,23 @@ def clone_repo(payload: CloneRepoRequest) -> dict:
         shutil.rmtree(work, ignore_errors=True)
         raise HTTPException(status_code=400, detail="clone 後目錄不存在")
 
-    return {
+    out = {
         "slot": s,
         "path": str(repo_dir.resolve()),
         "upload_id": job_id,
         "url": h.display_git_url(url),
     }
+    db.create_input_asset(
+        slot=s,
+        source_type="clone",
+        resolved_path=out["path"],
+        now=h.now_taipei(),
+        upload_id=job_id,
+        origin_url=out["url"],
+        branch=payload.branch,
+        size_bytes=None,
+    )
+    return out
 
 
 @router.get("/agents")
@@ -196,30 +233,17 @@ def create_agent(payload: AgentCreateRequest) -> dict:
     if not name or not role or not goal or not backstory:
         raise HTTPException(status_code=400, detail="name/role/goal/backstory 不可為空")
 
-    agents = h.load_agent_configs()
-    agent_id = f"custom-{uuid4().hex[:8]}"
-    item = {
-        "id": agent_id,
-        "name": name,
-        "role": role,
-        "goal": goal,
-        "backstory": backstory,
-        "model": model,
-    }
-    agents.append(item)
-    h.save_agent_configs(agents)
+    item = db.create_agent(name, role, goal, backstory, model, h.now_taipei())
     return {"agent": item}
 
 
 @router.delete("/agents/{agent_id}")
 def delete_agent(agent_id: str) -> dict:
-    agents = h.load_agent_configs()
     if agent_id == "integration-advisor":
         raise HTTPException(status_code=400, detail="預設 agent 不可刪除")
-    kept = [item for item in agents if item.get("id") != agent_id]
-    if len(kept) == len(agents):
+    ok = db.deactivate_agent(agent_id, h.now_taipei())
+    if not ok:
         raise HTTPException(status_code=404, detail="找不到要刪除的 agent")
-    h.save_agent_configs(kept)
     return {"ok": True}
 
 
@@ -258,8 +282,8 @@ def list_directory(
 @router.post("/assess")
 @rate_limit(os.getenv("RATE_LIMIT_ASSESS", "5/minute"))
 def assess(request: Request, payload: AssessRequest = Body(...)) -> dict[str, str]:
-    a = h.resolve_and_validate_dir(payload.project_a, "專案 A")
-    b = h.resolve_and_validate_dir(payload.project_b, "專案 B")
+    a = h.resolve_and_validate_input_path(payload.project_a, "專案 A")
+    b = h.resolve_and_validate_input_path(payload.project_b, "專案 B")
 
     if not os.getenv("GOOGLE_API_KEY"):
         raise HTTPException(

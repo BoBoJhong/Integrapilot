@@ -99,13 +99,34 @@ def _is_key_file(name: str) -> bool:
 
 def _build_project_snapshot(project_path: str, limits: dict[str, int | None]) -> str:
     root = Path(project_path)
-    if not root.is_dir():
+    if not root.exists():
         return f"無效路徑：{project_path}"
 
     max_tree_entries = limits["max_tree_entries"]
     max_key_files = limits["max_key_files"]
     max_file_chars = limits["max_file_chars"]
     max_snapshot_chars = limits["max_snapshot_chars"]
+
+    if root.is_file():
+        parts: list[str] = []
+        parts.append(f"輸入檔案：{root}")
+        parts.append("\n## 檔案內容節錄（截斷版）")
+        try:
+            text = root.read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            parts.append(f"（讀取失敗：{e}）")
+            return "\n".join(parts)
+        snippet = text if max_file_chars is None else text[:max_file_chars]
+        if max_file_chars is not None and len(text) > max_file_chars:
+            snippet += "\n...（已截斷）"
+        parts.append(f"```text\n{snippet}\n```")
+        out = "\n".join(parts)
+        if max_snapshot_chars is not None and len(out) > max_snapshot_chars:
+            return out[:max_snapshot_chars] + "\n\n...（整體摘要已截斷）"
+        return out
+
+    if not root.is_dir():
+        return f"無效路徑：{project_path}"
 
     tree_lines: list[str] = []
     key_files: list[Path] = []
@@ -167,6 +188,26 @@ def _collect_project_evidence(
 ) -> dict[str, object]:
     """收集報告可展示的評估證據（關鍵檔與掃描統計）。"""
     root = Path(project_path)
+    if not root.exists():
+        return {
+            "root": str(root),
+            "is_valid": False,
+            "scanned_dirs": 0,
+            "scanned_files": 0,
+            "key_files": [],
+            "input_type": "invalid",
+        }
+
+    if root.is_file():
+        return {
+            "root": str(root),
+            "is_valid": True,
+            "scanned_dirs": 0,
+            "scanned_files": 1,
+            "key_files": [root.name],
+            "input_type": "file",
+        }
+
     if not root.is_dir():
         return {
             "root": str(root),
@@ -174,6 +215,7 @@ def _collect_project_evidence(
             "scanned_dirs": 0,
             "scanned_files": 0,
             "key_files": [],
+            "input_type": "invalid",
         }
 
     scanned_dirs = 0
@@ -216,6 +258,7 @@ def _collect_project_evidence(
         "scanned_dirs": scanned_dirs,
         "scanned_files": scanned_files,
         "key_files": key_files,
+        "input_type": "directory",
     }
 
 
@@ -227,7 +270,13 @@ def build_evaluation_trace_markdown(project_a_path: str, project_b_path: str) ->
 
     def _format_files(title: str, ev: dict[str, object]) -> list[str]:
         lines: list[str] = [f"### {title}"]
-        lines.append(f"- 根目錄：`{ev['root']}`")
+        input_type = ev.get("input_type")
+        if input_type == "file":
+            lines.append(f"- 輸入型態：單一檔案")
+            lines.append(f"- 檔案路徑：`{ev['root']}`")
+        else:
+            lines.append(f"- 輸入型態：目錄")
+            lines.append(f"- 根目錄：`{ev['root']}`")
         lines.append(
             f"- 掃描統計：目錄 {ev['scanned_dirs']} 個、檔案 {ev['scanned_files']} 個"
         )
@@ -242,12 +291,12 @@ def build_evaluation_trace_markdown(project_a_path: str, project_b_path: str) ->
 
     parts: list[str] = [
         "## 評估方式與引用檔案",
-        "本次評估採用受控摘要流程，避免直接讀取整個專案造成噪音或 token 爆量。",
+        "本次評估採用受控摘要流程，避免直接讀取整個輸入路徑造成噪音或 token 爆量。",
         "",
         "### 評估流程",
-        "1. 掃描兩邊專案目錄（忽略 `.git`、`node_modules`、`dist`、`.venv` 等目錄）",
-        "2. 篩選關鍵檔（例如 `README*`、`package.json`、`requirements*.txt`、`Dockerfile*`）",
-        "3. 對關鍵檔進行截斷節錄，提供給分析 Agent 判斷技術棧與邊界",
+        "1. 針對兩邊輸入路徑建立摘要（若為目錄，會忽略 `.git`、`node_modules`、`dist`、`.venv` 等目錄）",
+        "2. 目錄模式會篩選關鍵檔（例如 `README*`、`package.json`、`requirements*.txt`、`Dockerfile*`）",
+        "3. 對關鍵檔或輸入檔案進行截斷節錄，提供給分析 Agent 判斷技術棧與邊界",
         "4. 由整合架構 Agent 匯總成整合建議與風險",
         "",
     ]

@@ -4,7 +4,7 @@ IntegraPilot 是一個以 CrewAI 驅動的雙專案整合評估工具，提供 C
 
 ## 特色
 
-- 雙專案整合評估：比較專案 A / B，產出 Markdown 報告
+- 雙輸入整合評估：比較 A / B（可目錄對目錄、檔案對檔案、檔案對目錄），產出 Markdown 報告
 - 報告工作台：報告列表、預覽、下載、Word 匯出
 - Agent 對話：依報告內容追問、釐清風險與行動建議
 - 決策選項助手：產生方案、勾選排序、綜合建議、套用回報告
@@ -42,6 +42,7 @@ IntegraPilot 是一個以 CrewAI 驅動的雙專案整合評估工具，提供 C
 
 - `GOOGLE_API_KEY`：Gemini API 金鑰（必填）
 - `MODEL`：LiteLLM 模型名稱（預設 `gemini/gemini-2.5-flash`）
+- `DATABASE_URL`：資料庫連線字串（建議 PostgreSQL）
 
 評估輸入上限（選填）：
 
@@ -66,6 +67,13 @@ pip install -r requirements.txt
 python run_web.py
 ```
 
+### CLI（目錄或檔案）
+
+```bash
+python run.py --project-a /projA --project-b /projB
+python run.py --project-a /projA/src/main.py --project-b /projB/src/main.py
+```
+
 ### 前端
 
 ```bash
@@ -79,6 +87,26 @@ npm run dev
 ```bash
 docker build -t integrapilot .
 docker run --rm -p 8000:8000 --env-file .env --name integrapilot-web integrapilot
+```
+
+### Docker Compose（含 PostgreSQL）
+
+```bash
+docker compose up -d --build
+```
+
+預設會把專案根目錄的 `projA/`、`projB/` 自動掛到容器內 `/projA`、`/projB`，可直接把要比對的檔案丟進這兩個資料夾後，在 UI 填 `/projA/...` 與 `/projB/...`。
+
+首次導入舊資料（可選）：
+
+```bash
+docker exec -it integrapilot-web python -m api.migrations.seed_from_files
+```
+
+手動執行 migration（可選）：
+
+```bash
+docker exec -it integrapilot-web alembic upgrade head
 ```
 
 ## CI/CD（GitHub Actions）
@@ -113,8 +141,16 @@ git push origin v1.0.0
 - `POST /api/options/synthesize`
 - `POST /api/reports/{report_id}/patch`
 
+## 資料儲存策略
+
+- 實體檔案維持路徑掛載與資料夾管理（`reports/`、`uploads/`、`/projA`、`/projB`）
+- PostgreSQL 儲存中繼資料（reports、assessment jobs、agents、input assets）
+- `/api/reports`、`/api/agents` 優先讀資料庫；可用 seed 指令匯入歷史檔案資料
+- `POST /api/reports/{report_id}/patch` 產生的新報告也會同步寫入資料庫索引
+
 ## 常見問題
 
 - Docker 內路徑請使用容器路徑（如 `/projA`、`/projB`），不要直接填 `C:\...`
-- 若出現「不是有效目錄：`/projA`」：代表容器內沒有這個資料夾，請在 `docker run` 加上 `-v "主機專案路徑:/projA"`（以及專案 B 的 `:/projB`），再於 UI 填 `/projA`、`/projB`
+- 若出現「不是有效路徑（檔案或目錄）」：代表容器內找不到該路徑，請確認 docker 掛載與輸入路徑（可用目錄或單一檔案）
+- 報告檔名時間戳與 `updated_at` 皆以台北時區（`Asia/Taipei`, UTC+8）為準
 - `422 query.payload` 通常是請求格式錯誤，請確認使用 `POST` 並帶 `Content-Type: application/json`

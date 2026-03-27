@@ -12,21 +12,32 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, UploadFile
 
 from word_reference import ensure_word_reference_docx
 
 from api.config import (
-    AGENTS_FILE,
     LIST_DIR_MAX_ENTRIES,
     REPORTS_DIR,
     UPLOAD_DIR,
 )
+from api import db
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def now_taipei() -> datetime:
+    return datetime.now(TAIPEI_TZ)
+
+
+def timestamp_to_taipei_iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=TAIPEI_TZ).isoformat()
 
 
 def _report_filename(project_a: str, project_b: str) -> str:
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ts = now_taipei().strftime("%Y%m%d-%H%M%S")
     a_name = Path(project_a).name or "project_a"
     b_name = Path(project_b).name or "project_b"
     safe = re.compile(r"[^a-zA-Z0-9._-]")
@@ -106,31 +117,25 @@ def default_agents() -> list[dict[str, str]]:
 
 
 def load_agent_configs() -> list[dict[str, str]]:
-    if not AGENTS_FILE.exists():
-        data = default_agents()
-        save_agent_configs(data)
-        return data
-    try:
-        raw = json.loads(AGENTS_FILE.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            return default_agents()
-        return [item for item in raw if isinstance(item, dict)]
-    except Exception:
-        return default_agents()
+    data = db.list_agents()
+    return data if data else default_agents()
 
 
 def save_agent_configs(items: list[dict[str, str]]) -> None:
-    AGENTS_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 相容舊介面：改由 DB 管理，這個函式保留避免舊程式直接呼叫失敗。
+    _ = items
 
 
 def find_agent_config(agent_id: str | None) -> dict[str, str]:
+    if agent_id:
+        found = db.get_agent(agent_id)
+        if found:
+            return found
+        raise HTTPException(status_code=404, detail=f"找不到 agent：{agent_id}")
     agents = load_agent_configs()
     if not agent_id:
         return agents[0] if agents else default_agents()[0]
-    for item in agents:
-        if item.get("id") == agent_id:
-            return item
-    raise HTTPException(status_code=404, detail=f"找不到 agent：{agent_id}")
+    return agents[0] if agents else default_agents()[0]
 
 
 def markdown_to_docx_bytes(md: str, base_dir: Path) -> bytes:
@@ -301,7 +306,7 @@ def run_git_clone(url: str, dest: Path, branch: str | None) -> None:
         raise HTTPException(status_code=400, detail=f"git clone 失敗：{err[:2500]}")
 
 
-def resolve_and_validate_dir(path_value: str, label: str) -> str:
+def resolve_and_validate_input_path(path_value: str, label: str) -> str:
     raw = path_value.strip()
     if os.name != "nt" and re.match(r"^[A-Za-z]:\\", raw):
         raise HTTPException(
@@ -312,7 +317,7 @@ def resolve_and_validate_dir(path_value: str, label: str) -> str:
             ),
         )
     resolved = os.path.abspath(os.path.expanduser(raw))
-    if not os.path.isdir(resolved):
+    if not os.path.exists(resolved):
         mount_a, mount_b = default_mount_paths()
         hint = ""
         if resolved in {
@@ -325,7 +330,7 @@ def resolve_and_validate_dir(path_value: str, label: str) -> str:
             ).format(mount_a=mount_a, mount_b=mount_b)
         raise HTTPException(
             status_code=400,
-            detail=f"{label} 不是有效目錄：{resolved}{hint}",
+            detail=f"{label} 不是有效路徑（檔案或目錄）：{resolved}{hint}",
         )
     p = Path(resolved).resolve()
     if not path_is_under_allowed_roots(p):
@@ -337,6 +342,11 @@ def resolve_and_validate_dir(path_value: str, label: str) -> str:
             ),
         )
     return str(p)
+
+
+def resolve_and_validate_dir(path_value: str, label: str) -> str:
+    """向後相容：保留舊函式名稱，實際改為允許檔案或目錄。"""
+    return resolve_and_validate_input_path(path_value, label)
 
 
 def run_chat_crew(
@@ -539,11 +549,22 @@ def patch_report_with_suggestion(
     else:
         patched = f"{original.rstrip()}\n\n## {section_title}\n\n{suggestion}\n"
 
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ts = now_taipei().strftime("%Y%m%d-%H%M%S")
     base = source.stem
     new_name = f"{ts}__{base}__patched.md"
     target = REPORTS_DIR / new_name
     target.write_text(patched, encoding="utf-8")
+    source_meta = db.get_report(report_id) or {}
+    db.upsert_report(
+        report_id=new_name,
+        report_name=new_name,
+        file_path=str(target.resolve()),
+        project_a_path=str(source_meta.get("project_a_path") or ""),
+        project_b_path=str(source_meta.get("project_b_path") or ""),
+        input_mode=str(source_meta.get("input_mode") or "patched"),
+        size_bytes=target.stat().st_size,
+        now=now_taipei(),
+    )
     return {
         "new_report_id": new_name,
         "mode": mode,
@@ -557,13 +578,33 @@ def run_assessment(project_a: str, project_b: str) -> tuple[str, str]:
         create_integration_assessment_crew,
     )
 
-    crew = create_integration_assessment_crew(project_a, project_b)
-    result = crew.kickoff()
-    raw_report = str(result)
-    trace_md = build_evaluation_trace_markdown(project_a, project_b)
-    result_text = insert_trace_section(raw_report, trace_md)
-    report_id = save_report(project_a, project_b, result_text)
-    return result_text, report_id
+    now_start = now_taipei()
+    input_mode = db.detect_input_mode(project_a, project_b)
+    job_id = db.create_job(project_a, project_b, input_mode, now_start)
+    try:
+        crew = create_integration_assessment_crew(project_a, project_b)
+        result = crew.kickoff()
+        raw_report = str(result)
+        trace_md = build_evaluation_trace_markdown(project_a, project_b)
+        result_text = insert_trace_section(raw_report, trace_md)
+        report_id = save_report(project_a, project_b, result_text)
+        report_path = REPORTS_DIR / report_id
+        now_end = now_taipei()
+        db.upsert_report(
+            report_id=report_id,
+            report_name=report_id,
+            file_path=str(report_path.resolve()),
+            project_a_path=project_a,
+            project_b_path=project_b,
+            input_mode=input_mode,
+            size_bytes=report_path.stat().st_size if report_path.exists() else len(result_text.encode("utf-8")),
+            now=now_end,
+        )
+        db.complete_job(job_id=job_id, report_id=report_id, status="completed", now=now_end)
+        return result_text, report_id
+    except Exception as e:
+        db.fail_job(job_id=job_id, now=now_taipei(), error_message=str(e))
+        raise
 
 
 async def save_upload_zip_chunks(

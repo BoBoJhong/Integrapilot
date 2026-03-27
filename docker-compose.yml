@@ -5,11 +5,24 @@ services:
     build: .
     image: integrapilot
     container_name: integrapilot-web
+    depends_on:
+      - db
     ports:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://integrapilot:integrapilot@db:5432/integrapilot}
     volumes:
       - "./reports:/app/reports"
-      # - "C:/path/to/projA:/projA"
-      # - "C:/path/to/projB:/projB"
+      - "./projA:/projA"
+      - "./projB:/projB"
+  db:
+    image: postgres:16
+    container_name: integrapilot-db
+    environment:
+      - POSTGRES_DB=integrapilot
+      - POSTGRES_USER=integrapilot
+      - POSTGRES_PASSWORD=integrapilot
+    volumes:
+      - "./.pgdata:/var/lib/postgresql/data"

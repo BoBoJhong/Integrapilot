@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 
 class AssessRequest(BaseModel):
-    project_a: str = Field(..., description="專案 A 根目錄路徑")
-    project_b: str = Field(..., description="專案 B 根目錄路徑")
+    project_a: str = Field(..., description="專案 A 輸入路徑（可為目錄或單一檔案）")
+    project_b: str = Field(..., description="專案 B 輸入路徑（可為目錄或單一檔案）")
 
 
 class ChatRequest(BaseModel):

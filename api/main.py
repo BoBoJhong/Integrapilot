@@ -10,6 +10,8 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+from api import db
+from api import helpers as h
 from api.config import setup_dirs, setup_env, UI_DIST
 from api.limiter_ext import limiter
 from api.routes_api import router as api_router
@@ -18,6 +20,9 @@ from api.routes_api import router as api_router
 def create_app() -> FastAPI:
     setup_env()
     setup_dirs()
+    db.run_migrations()
+    default_agent = h.default_agents()[0]
+    db.upsert_default_agent(h.now_taipei(), default_agent)
 
     app = FastAPI(title="IntegraPilot")
 

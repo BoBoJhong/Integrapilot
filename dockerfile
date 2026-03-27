@@ -18,6 +18,8 @@ RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r re
 
 COPY integrapilot ./integrapilot
 COPY api ./api
+COPY alembic ./alembic
+COPY alembic.ini .
 COPY run.py .
 COPY web_api.py .
 COPY word_reference.py .
