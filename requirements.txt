@@ -1,0 +1,12 @@
+# 請使用 Python 3.10–3.13（CrewAI 目前不支援 3.14+）
+# 本機若為 3.14，請用 Docker 或安裝 3.12/3.13 另建 venv
+crewai>=0.100.0
+crewai[google-genai]>=0.100.0
+crewai-tools>=0.40.0
+python-dotenv>=1.0.0
+fastapi>=0.115.0,<0.116.0
+uvicorn[standard]>=0.30.0,<0.35.0
+python-multipart>=0.0.9,<1.0.0
+pypandoc>=1.13,<2.0.0
+python-docx>=1.1.0,<2.0.0
+slowapi>=0.1.9,<0.2.0

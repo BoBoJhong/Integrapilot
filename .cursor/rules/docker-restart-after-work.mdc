@@ -1,0 +1,21 @@
+---
+description: 完成會影響執行中的 Web/API 的變更後，重建並重啟 Docker 容器
+alwaysApply: true
+---
+
+# Docker 重啟慣例（IntegraPilot 專案）
+
+當你完成以下任一類型的變更後，**在結束該次工作前**應主動幫使用者：
+
+1. 在專案根目錄執行 **`docker build -t integrapilot .`**（或專案慣用的映像名稱）
+2. 停止並移除舊容器 **`integrapilot-web`**（若存在），再以 **`docker run`** 重新啟動，並沿用既有慣例：
+   - **連接埠**：`-p 8000:8000`
+   - **環境變數**：`--env-file` 指向專案根目錄的 `.env`
+   - **專案掛載**（若使用者曾使用）：  
+     `-v "C:\Users\Bobo\CS_AITrainer:/projA"`  
+     `-v "C:\Users\Bobo\Bot_Platform:/projB"`
+   - **報告持久化**（建議）：`-v "c:\Users\Bobo\integrapilot\reports:/app/reports"`（若本機專案資料夾仍為其他名稱，請改成你的路徑）
+
+若本次變更僅為文件、與執行環境無關，可省略重建；**後端、前端建置、dockerfile、requirements** 等變更則應重建並重啟。
+
+完成後簡短回報容器名稱、連接埠與是否已成功 `Up`。
