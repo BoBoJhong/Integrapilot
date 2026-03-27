@@ -52,6 +52,41 @@ IGNORE_DIRS = {
 }
 
 
+def _env_int_limit(name: str, default: int) -> int | None:
+    """讀取整數上限；允許 0 或 -1 代表不限制。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+
+    text = raw.strip()
+    if not text:
+        return default
+    if text in {"0", "-1"}:
+        return None
+
+    try:
+        value = int(text)
+    except ValueError:
+        return default
+    if value < 1:
+        return default
+    return value
+
+
+def _load_assessment_limits() -> dict[str, int | None]:
+    return {
+        "max_tree_entries": _env_int_limit("ASSESS_MAX_TREE_ENTRIES", MAX_TREE_ENTRIES),
+        "max_key_files": _env_int_limit("ASSESS_MAX_KEY_FILES", MAX_KEY_FILES),
+        "max_file_chars": _env_int_limit("ASSESS_MAX_FILE_CHARS", MAX_FILE_CHARS),
+        "max_snapshot_chars": _env_int_limit(
+            "ASSESS_MAX_SNAPSHOT_CHARS", MAX_SNAPSHOT_CHARS
+        ),
+        "max_evidence_files": _env_int_limit(
+            "ASSESS_MAX_EVIDENCE_FILES", MAX_EVIDENCE_FILES
+        ),
+    }
+
+
 def _build_llm() -> LLM:
     load_dotenv()
     model = os.getenv("MODEL", "gemini/gemini-2.5-flash")
@@ -62,10 +97,15 @@ def _is_key_file(name: str) -> bool:
     return any(fnmatch.fnmatch(name, p) for p in KEY_FILE_PATTERNS)
 
 
-def _build_project_snapshot(project_path: str) -> str:
+def _build_project_snapshot(project_path: str, limits: dict[str, int | None]) -> str:
     root = Path(project_path)
     if not root.is_dir():
         return f"無效路徑：{project_path}"
+
+    max_tree_entries = limits["max_tree_entries"]
+    max_key_files = limits["max_key_files"]
+    max_file_chars = limits["max_file_chars"]
+    max_snapshot_chars = limits["max_snapshot_chars"]
 
     tree_lines: list[str] = []
     key_files: list[Path] = []
@@ -75,21 +115,24 @@ def _build_project_snapshot(project_path: str) -> str:
         rel_dir = Path(dirpath).relative_to(root)
 
         for d in sorted(dirnames):
-            if len(tree_lines) >= MAX_TREE_ENTRIES:
+            if max_tree_entries is not None and len(tree_lines) >= max_tree_entries:
                 break
             p = (rel_dir / d).as_posix()
             tree_lines.append(f"- {p}/")
-        if len(tree_lines) >= MAX_TREE_ENTRIES:
+        if max_tree_entries is not None and len(tree_lines) >= max_tree_entries:
             break
 
         for f in sorted(filenames):
-            if len(tree_lines) >= MAX_TREE_ENTRIES:
+            if max_tree_entries is not None and len(tree_lines) >= max_tree_entries:
                 break
             p = rel_dir / f
             tree_lines.append(f"- {p.as_posix()}")
-            if len(key_files) < MAX_KEY_FILES and _is_key_file(f):
+            if (
+                _is_key_file(f)
+                and (max_key_files is None or len(key_files) < max_key_files)
+            ):
                 key_files.append(Path(dirpath) / f)
-        if len(tree_lines) >= MAX_TREE_ENTRIES:
+        if max_tree_entries is not None and len(tree_lines) >= max_tree_entries:
             break
 
     parts: list[str] = []
@@ -108,18 +151,20 @@ def _build_project_snapshot(project_path: str) -> str:
             except OSError as e:
                 parts.append(f"\n### {rel}\n（讀取失敗：{e}）")
                 continue
-            snippet = text[:MAX_FILE_CHARS]
-            if len(text) > MAX_FILE_CHARS:
+            snippet = text if max_file_chars is None else text[:max_file_chars]
+            if max_file_chars is not None and len(text) > max_file_chars:
                 snippet += "\n...（已截斷）"
             parts.append(f"\n### {rel}\n```text\n{snippet}\n```")
 
     out = "\n".join(parts)
-    if len(out) > MAX_SNAPSHOT_CHARS:
-        return out[:MAX_SNAPSHOT_CHARS] + "\n\n...（整體摘要已截斷）"
+    if max_snapshot_chars is not None and len(out) > max_snapshot_chars:
+        return out[:max_snapshot_chars] + "\n\n...（整體摘要已截斷）"
     return out
 
 
-def _collect_project_evidence(project_path: str) -> dict[str, object]:
+def _collect_project_evidence(
+    project_path: str, limits: dict[str, int | None]
+) -> dict[str, object]:
     """收集報告可展示的評估證據（關鍵檔與掃描統計）。"""
     root = Path(project_path)
     if not root.is_dir():
@@ -134,6 +179,7 @@ def _collect_project_evidence(project_path: str) -> dict[str, object]:
     scanned_dirs = 0
     scanned_files = 0
     key_files: list[str] = []
+    max_evidence_files = limits["max_evidence_files"]
 
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
@@ -141,7 +187,7 @@ def _collect_project_evidence(project_path: str) -> dict[str, object]:
 
         for name in filenames:
             scanned_files += 1
-            if len(key_files) >= MAX_EVIDENCE_FILES:
+            if max_evidence_files is not None and len(key_files) >= max_evidence_files:
                 continue
             if _is_key_file(name):
                 rel = (Path(dirpath) / name).relative_to(root).as_posix()
@@ -150,14 +196,17 @@ def _collect_project_evidence(project_path: str) -> dict[str, object]:
     if not key_files:
         # 若沒有命中 pattern，至少提供幾個樣本檔案，讓評估來源可追蹤。
         samples: list[str] = []
+        sample_limit = 10
+        if max_evidence_files is not None:
+            sample_limit = min(sample_limit, max_evidence_files)
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
             for name in sorted(filenames):
                 rel = (Path(dirpath) / name).relative_to(root).as_posix()
                 samples.append(rel)
-                if len(samples) >= min(10, MAX_EVIDENCE_FILES):
+                if len(samples) >= sample_limit:
                     break
-            if len(samples) >= min(10, MAX_EVIDENCE_FILES):
+            if len(samples) >= sample_limit:
                 break
         key_files = samples
 
@@ -172,8 +221,9 @@ def _collect_project_evidence(project_path: str) -> dict[str, object]:
 
 def build_evaluation_trace_markdown(project_a_path: str, project_b_path: str) -> str:
     """輸出「如何評估、用了什麼檔案」的透明化區塊。"""
-    ev_a = _collect_project_evidence(project_a_path)
-    ev_b = _collect_project_evidence(project_b_path)
+    limits = _load_assessment_limits()
+    ev_a = _collect_project_evidence(project_a_path, limits)
+    ev_b = _collect_project_evidence(project_b_path, limits)
 
     def _format_files(title: str, ev: dict[str, object]) -> list[str]:
         lines: list[str] = [f"### {title}"]
@@ -210,8 +260,9 @@ def build_evaluation_trace_markdown(project_a_path: str, project_b_path: str) ->
 def create_integration_assessment_crew(project_a_path: str, project_b_path: str) -> Crew:
     """建立依序執行的 Crew，使用受控摘要避免 token 過大。"""
     llm = _build_llm()
-    snapshot_a = _build_project_snapshot(project_a_path)
-    snapshot_b = _build_project_snapshot(project_b_path)
+    limits = _load_assessment_limits()
+    snapshot_a = _build_project_snapshot(project_a_path, limits)
+    snapshot_b = _build_project_snapshot(project_b_path, limits)
 
     codebase_analyst = Agent(
         role="程式庫與結構分析師",

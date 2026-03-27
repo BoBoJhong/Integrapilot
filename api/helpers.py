@@ -313,7 +313,20 @@ def resolve_and_validate_dir(path_value: str, label: str) -> str:
         )
     resolved = os.path.abspath(os.path.expanduser(raw))
     if not os.path.isdir(resolved):
-        raise HTTPException(status_code=400, detail=f"{label} 不是有效目錄：{resolved}")
+        mount_a, mount_b = default_mount_paths()
+        hint = ""
+        if resolved in {
+            os.path.abspath(mount_a),
+            os.path.abspath(mount_b),
+        }:
+            hint = (
+                " 常見原因：Docker 未掛載該路徑。"
+                "請在 `docker run` 加上 `-v \"你的專案資料夾:{mount_a}\"`（專案 B 同理用 `{mount_b}`）。"
+            ).format(mount_a=mount_a, mount_b=mount_b)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} 不是有效目錄：{resolved}{hint}",
+        )
     p = Path(resolved).resolve()
     if not path_is_under_allowed_roots(p):
         raise HTTPException(

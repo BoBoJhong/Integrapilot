@@ -36,6 +36,23 @@ IntegraPilot 是一個以 CrewAI 驅動的雙專案整合評估工具，提供 C
 - （可選）Docker
 - `GOOGLE_API_KEY`（必填）
 
+## 環境變數
+
+基本：
+
+- `GOOGLE_API_KEY`：Gemini API 金鑰（必填）
+- `MODEL`：LiteLLM 模型名稱（預設 `gemini/gemini-2.5-flash`）
+
+評估輸入上限（選填）：
+
+- `ASSESS_MAX_TREE_ENTRIES`：目錄摘要最多列出幾筆路徑（預設 `250`）
+- `ASSESS_MAX_KEY_FILES`：最多擷取幾個關鍵檔內容（預設 `30`）
+- `ASSESS_MAX_FILE_CHARS`：每個關鍵檔最多擷取字元數（預設 `4000`）
+- `ASSESS_MAX_SNAPSHOT_CHARS`：單個專案摘要總字元上限（預設 `30000`）
+- `ASSESS_MAX_EVIDENCE_FILES`：報告中列出的引用檔案上限（預設 `25`）
+
+設定為 `0` 或 `-1` 代表該項「不限制」（仍受模型 token 上限影響，且可能提高成本與延遲）。
+
 ### 本機資料夾名稱（建議）
 
 建議將專案根目錄命名為 **`integrapilot`**，與 Docker 映像 **`integrapilot`**、容器 **`integrapilot-web`** 一致。若 IDE 正在使用該資料夾導致無法重新命名，請先關閉工作區後再於檔案總管改名。
@@ -99,4 +116,5 @@ git push origin v1.0.0
 ## 常見問題
 
 - Docker 內路徑請使用容器路徑（如 `/projA`、`/projB`），不要直接填 `C:\...`
+- 若出現「不是有效目錄：`/projA`」：代表容器內沒有這個資料夾，請在 `docker run` 加上 `-v "主機專案路徑:/projA"`（以及專案 B 的 `:/projB`），再於 UI 填 `/projA`、`/projB`
 - `422 query.payload` 通常是請求格式錯誤，請確認使用 `POST` 並帶 `Content-Type: application/json`
