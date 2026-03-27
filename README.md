@@ -15,6 +15,7 @@ IntegraPilot 是一個以 CrewAI 驅動的雙專案整合評估工具，提供 C
 
 ```text
 .
+├─ .github/workflows/      # GitHub Actions（CI/CD）
 ├─ api/                    # FastAPI 路由、schema、helper
 ├─ integrapilot/           # CrewAI agents/tasks（Python 套件目錄）
 ├─ frontend/               # Vue 3 + Vite + Element Plus
@@ -61,6 +62,28 @@ npm run dev
 ```bash
 docker build -t integrapilot .
 docker run --rm -p 8000:8000 --env-file .env --name integrapilot-web integrapilot
+```
+
+## CI/CD（GitHub Actions）
+
+專案已內建兩條 workflow：
+
+- `CI`：在 `push main` 與 `pull_request` 觸發，執行：
+  - Backend `pytest`
+  - Frontend `npm run lint`、`npm run build`
+  - Docker image build 檢查（不推送）
+- `CD`：在 `push main`、`push tag (v*)` 或手動觸發時，建置並推送映像到 GHCR：
+  - Image: `ghcr.io/<你的 GitHub 帳號或組織>/integrapilot`
+  - 預設標籤包含 `latest`（預設分支）、branch、tag、sha
+
+### 啟用 CD 必要設定
+
+1. 確認 repository 的 Actions 權限允許寫入 packages（workflow 已設定 `packages: write`）
+2. 若要使用版本標籤發版，建立並推送 tag（例如 `v1.0.0`）：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 ## 主要 API
